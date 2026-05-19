@@ -1,0 +1,1114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>VEXARION – Surface Module v3</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#000; overflow:hidden; font-family:'Courier New',monospace; touch-action:none; }
+
+canvas { display:block; }
+
+#hud {
+  position:fixed; top:0; left:0; right:0;
+  display:flex; justify-content:space-between; align-items:flex-start;
+  padding:12px 16px; pointer-events:none; z-index:100;
+  color:#0ff; font-size:11px; letter-spacing:0.15em;
+}
+#hud-left h1 { font-size:18px; font-weight:700; color:#0ff; letter-spacing:0.3em; }
+#hud-left p  { font-size:9px; color:#0aa; letter-spacing:0.2em; margin-top:2px; }
+#hud-stats { display:flex; gap:20px; }
+.stat { text-align:center; }
+.stat .val { font-size:16px; color:#fff; }
+.stat .lbl { font-size:8px; color:#0aa; letter-spacing:0.2em; }
+
+/* Corner brackets */
+#corner-tl,#corner-tr,#corner-bl,#corner-br {
+  position:fixed; width:40px; height:40px; z-index:99; pointer-events:none;
+  border-color:#0ff4; border-style:solid; border-width:0;
+}
+#corner-tl { top:8px; left:8px; border-top-width:2px; border-left-width:2px; }
+#corner-tr { top:8px; right:8px; border-top-width:2px; border-right-width:2px; }
+#corner-bl { bottom:80px; left:8px; border-bottom-width:2px; border-left-width:2px; }
+#corner-br { bottom:80px; right:8px; border-bottom-width:2px; border-right-width:2px; }
+
+/* Fade overlay */
+#fade {
+  position:fixed; inset:0; z-index:200;
+  pointer-events:none; opacity:0;
+  transition:opacity 0.6s ease;
+}
+
+/* Prompt overlay */
+#prompt {
+  position:fixed; bottom:100px; left:50%; transform:translateX(-50%);
+  z-index:150; display:flex; gap:12px;
+}
+.prompt-btn {
+  background:#0002; border:1px solid #0ff8; color:#0ff;
+  font-family:'Courier New',monospace; font-size:12px; letter-spacing:0.2em;
+  padding:8px 20px; cursor:pointer; text-transform:uppercase;
+  transition: background 0.2s, box-shadow 0.2s;
+}
+.prompt-btn:hover { background:#0ff2; box-shadow:0 0 12px #0ff8; }
+
+/* Controls hint */
+#hint {
+  position:fixed; bottom:88px; left:50%; transform:translateX(-50%);
+  color:#0aa6; font-size:9px; letter-spacing:0.2em; z-index:100;
+  pointer-events:none; text-align:center;
+}
+
+/* Analog stick */
+#stick-zone {
+  position:fixed; bottom:12px; left:50%; transform:translateX(-50%);
+  width:120px; height:60px; z-index:100;
+  display:flex; align-items:center; justify-content:center;
+}
+#stick-outer {
+  width:90px; height:90px; border-radius:50%;
+  border:2px solid #0ff4; background:#0ff1;
+  position:relative; touch-action:none;
+}
+#stick-inner {
+  width:30px; height:30px; border-radius:50%;
+  background:radial-gradient(circle at 40% 40%, #0ff, #066);
+  box-shadow:0 0 12px #0ff;
+  position:absolute; top:50%; left:50%;
+  transform:translate(-50%,-50%);
+  pointer-events:none;
+}
+
+/* View label */
+#view-label {
+  position:fixed; top:50px; left:50%; transform:translateX(-50%);
+  color:#0ff6; font-size:9px; letter-spacing:0.3em;
+  z-index:100; pointer-events:none; text-align:center;
+}
+</style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+
+<div id="hud">
+  <div id="hud-left">
+    <h1>V E X A R I O N</h1>
+    <p id="hud-mode">DEEP SPACE — TOP-DOWN VIEW</p>
+  </div>
+  <div id="hud-stats">
+    <div class="stat"><div class="val" id="s-spd">0.0</div><div class="lbl">SPEED</div></div>
+    <div class="stat"><div class="val" id="s-hdg">000°</div><div class="lbl">HEADING</div></div>
+    <div class="stat"><div class="val" id="s-thr">0%</div><div class="lbl">THRUST</div></div>
+  </div>
+</div>
+
+<div id="corner-tl"></div>
+<div id="corner-tr"></div>
+<div id="corner-bl"></div>
+<div id="corner-br"></div>
+
+<div id="fade"></div>
+<div id="prompt" style="display:none"></div>
+<div id="hint">DRAG STICK · WASD · ARROW KEYS &nbsp; THRUST VECTOR</div>
+<div id="view-label"></div>
+
+<div id="stick-zone">
+  <div id="stick-outer">
+    <div id="stick-inner"></div>
+  </div>
+</div>
+
+<script src="vexarion-ship.js"></script>
+<script>
+// ─────────────────────────────────────────────────────────────
+//  CANVAS SETUP
+// ─────────────────────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+let W, H;
+function resize() {
+  W = canvas.width  = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ─────────────────────────────────────────────────────────────
+//  GAME STATE
+// ─────────────────────────────────────────────────────────────
+const MODE = { SPACE:'space', SURFACE:'surface', TRANSITIONING:'transitioning' };
+let mode = MODE.SPACE;
+
+// Ship physics
+const ship = {
+  x: 0, y: 0,        // world position (space)
+  angle: 0,           // radians, 0 = up
+  vx: 0, vy: 0,
+  speed: 0,
+  rotVel: 0,
+  thrust: 0,
+  // Surface position
+  sx: 0, sy: 0,
+  sangle: 0,
+  svx: 0, svy: 0,
+  srotVel: 0,
+};
+
+// Input
+const keys = {};
+const stickInput = { x:0, y:0 }; // -1..1
+
+// ─────────────────────────────────────────────────────────────
+//  VOXEL SHIP DEFINITION
+//  (shared between top-down and isometric renderers)
+//  Each voxel: [x, y, z, color]  — z=0 is bottom
+// ─────────────────────────────────────────────────────────────
+//  SHIP DATA — loaded from vexarion-ship.js
+//  SHIP_DEF is defined in that file and frozen.
+//  The engine only reads from it; never writes.
+// ─────────────────────────────────────────────────────────────
+const VOXELS      = SHIP_DEF.voxels;
+const VOXEL_SIZE  = SHIP_DEF.topdown.voxelSize;
+const ISO_TILE    = SHIP_DEF.iso.tileSize;
+
+// Pre-build neighbour lookup set once at startup (integer grid positions)
+const VOXEL_SET = new Set(VOXELS.map(([x,y,z]) => `${x},${y},${z}`));
+
+// ─────────────────────────────────────────────────────────────
+//  SPACE WORLD
+// ─────────────────────────────────────────────────────────────
+// Stars (parallax layers)
+const starLayers = [1,2,3].map(layer => {
+  const stars = [];
+  for(let i=0;i<80/layer;i++){
+    stars.push({ x: Math.random()*4000-2000, y: Math.random()*4000-2000,
+                 r: Math.random()*layer*0.8+0.3, b: Math.random()*0.5+0.5 });
+  }
+  return { stars, parallax: layer*0.15 };
+});
+
+// Planet
+const PLANET = {
+  wx: 200, wy: -250, r: 180,
+  colors: ['#1a3a1a','#0d2b0d','#2a5020'],
+  DOCK_RADIUS: 240,    // proximity for dock option
+  ENTER_RADIUS: 195,   // collision boundary
+};
+
+// ─────────────────────────────────────────────────────────────
+//  SURFACE WORLD (isometric)
+//  Tiles pre-sorted and pre-shaded at build time —
+//  drawSurface() does zero sorting, zero color math per frame.
+// ─────────────────────────────────────────────────────────────
+function _shade(hex, f) {
+  const r = parseInt(hex.slice(1,3),16);
+  const g = parseInt(hex.slice(3,5),16);
+  const b = parseInt(hex.slice(5,7),16);
+  return `rgb(${Math.round(r*f)},${Math.round(g*f)},${Math.round(b*f)})`;
+}
+
+const surfaceTiles = [];
+(function buildSurface(){
+  const SIZE = 30;
+  const colors = ['#0d2010','#0f2812','#122e14','#1a3a1a','#0a1c0c'];
+  for(let tx=-SIZE;tx<=SIZE;tx++){
+    for(let ty=-SIZE;ty<=SIZE;ty++){
+      const h = Math.floor(Math.random()*1.8);
+      const c = colors[Math.floor(Math.random()*colors.length)];
+      // Pre-bake side face colors — never recomputed at runtime
+      surfaceTiles.push({ tx, ty, h, c,
+        cDark:  _shade(c, 0.6),
+        cRight: _shade(c, 0.45) });
+    }
+  }
+  // Pre-sort painter's order ONCE — isometric depth never changes
+  surfaceTiles.sort((a,b) => (a.tx+a.ty) - (b.tx+b.ty));
+})();
+
+// ─────────────────────────────────────────────────────────────
+//  ISOMETRIC HELPERS
+// ─────────────────────────────────────────────────────────────
+function isoProject(wx, wy, wz) {
+  // Standard isometric: x→right-down, y→left-down, z→up
+  const TILE = 32;
+  const sx = (wx - wy) * TILE;
+  const sy = (wx + wy) * (TILE * 0.5) - wz * TILE;
+  return { sx, sy };
+}
+
+// ─────────────────────────────────────────────────────────────
+//  TOP-DOWN SHIP RENDERER
+// ─────────────────────────────────────────────────────────────
+function drawShipTopDown(cx, cy, angle, scale=1) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(angle);
+
+  const S = VOXEL_SIZE * scale; // voxel size from ship definition
+
+  // Project voxels top-down: just x,y (z gives shading)
+  // Sort: paint furthest-back first (largest y = behind in top-down)
+  const sorted = [...VOXELS].sort((a,b) => b[1]-a[1]);
+
+  for(const [vx,vy,vz,baseColor] of sorted) {
+    const px = vx * S;
+    const py = -vy * S; // flip Y so nose faces up
+
+    // Top face (z determines brightness)
+    const bright = 1 - vz * 0.15;
+    ctx.fillStyle = shadeColor(baseColor, bright);
+    ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+    ctx.lineWidth = 0.5;
+    ctx.beginPath();
+    ctx.rect(px - S/2, py - S/2, S, S);
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+// ─────────────────────────────────────────────────────────────
+//  ISOMETRIC SHIP RENDERER — TRUE 3D CORNER PROJECTION
+//  Each cube's 8 corners are rotated in 3D then projected to
+//  isometric screen space. Faces are drawn from real projected
+//  corners so the ship rotates as one solid intact object.
+// ─────────────────────────────────────────────────────────────
+
+// Isometric projection: 3D world → 2D screen
+// Camera looks from above-right-front (classic iso angle)
+function isoProj(x, y, z, T) {
+  // x = right, y = forward(into screen), z = up
+  // iso screen:
+  //   sx = (x - y) * T
+  //   sy = (x + y) * T*0.5 - z * T
+  return {
+    sx: (x - y) * T,
+    sy: (x + y) * T * 0.5 - z * T
+  };
+}
+
+// The 8 corners of a unit cube at grid position (gx,gy,gz)
+// before rotation. Each corner offset in {0,1} per axis.
+const CUBE_CORNERS = [
+  [0,0,0],[1,0,0],[1,1,0],[0,1,0], // bottom face CCW
+  [0,0,1],[1,0,1],[1,1,1],[0,1,1], // top face CCW
+];
+
+// The 6 faces of a cube as corner index quads + outward normal
+// normals in (nx,ny,nz) — camera sits at (+inf,+inf,+inf) in iso
+const CUBE_FACES = [
+  { idx:[4,5,6,7], nx: 0, ny: 0, nz: 1  }, // TOP
+  { idx:[0,4,7,3], nx:-1, ny: 0, nz: 0  }, // LEFT  (-x)
+  { idx:[1,5,4,0], nx: 0, ny:-1, nz: 0  }, // FRONT (-y)
+  { idx:[2,6,5,1], nx: 1, ny: 0, nz: 0  }, // RIGHT (+x)
+  { idx:[3,7,6,2], nx: 0, ny: 1, nz: 0  }, // BACK  (+y)
+  { idx:[0,1,2,3], nx: 0, ny: 0, nz:-1  }, // BOTTOM
+];
+
+// Iso camera direction (the direction light/camera comes FROM, normalised)
+// For standard iso the camera vector is roughly (+1,+1,+1) normalised
+const CAM = { x: 1/Math.SQRT2, y: 1/Math.SQRT2, z: 1 };
+
+// Face brightness for each normal direction relative to camera+light
+function faceBrightness(nx, ny, nz) {
+  // dot product with a light from upper-right-front
+  const lx=0.6, ly=-0.4, lz=0.7;
+  const d = nx*lx + ny*ly + nz*lz;
+  return 0.45 + 0.55 * Math.max(0, d);
+}
+
+function drawShipIsometric(cx, cy, angle, scale=1) {
+  const T = ISO_TILE * scale; // tile size from ship definition
+
+  const cosA = Math.cos(angle);
+  const sinA = Math.sin(angle);
+
+  // Re-use the pre-built VOXEL_SET (built once at startup) for neighbour culling
+
+  // For each voxel:
+  // 1. Rotate its 8 corners around Z axis
+  // 2. Project to isometric 2D
+  // 3. Determine which faces are visible (front-face + not occluded)
+  // 4. Sort all visible faces by painter's depth
+  // 5. Draw back-to-front
+
+  const allFaces = [];
+
+  for(const [gx, gy, gz, baseCol] of VOXELS) {
+    // Rotate grid center of this cube around Z
+    const rcx =  gx * cosA - gy * sinA;
+    const rcy =  gx * sinA + gy * cosA;
+    const rcz =  gz;
+
+    // Compute all 8 rotated+projected corners
+    const pts = CUBE_CORNERS.map(([dx,dy,dz]) => {
+      // Local offset (centered: -0.5 to +0.5 per axis)
+      const lx = dx - 0.5;
+      const ly = dy - 0.5;
+      const lz = dz;          // z offset: 0=bottom, 1=top of cube
+
+      // Rotate lx,ly around Z
+      const rlx =  lx * cosA - ly * sinA;
+      const rly =  lx * sinA + ly * cosA;
+
+      // Final 3D position
+      const wx = rcx + rlx;
+      const wy = rcy + rly;
+      const wz = rcz + lz;
+
+      return isoProj(wx, wy, wz, T);
+    });
+
+    // Check each face
+    for(const face of CUBE_FACES) {
+      // Rotate the face normal by the same Z rotation
+      const fnx =  face.nx * cosA - face.ny * sinA;
+      const fny =  face.nx * sinA + face.ny * cosA;
+      const fnz =  face.nz;
+
+      // Back-face cull: dot with iso camera direction
+      const dot = fnx * CAM.x + fny * CAM.y + fnz * CAM.z;
+      if(dot <= 0) continue; // facing away from camera — skip
+
+      // Neighbour occlusion: check if the voxel on the other side of this face exists
+      const nx = Math.round(gx + face.nx);
+      const ny = Math.round(gy + face.ny);
+      const nz = Math.round(gz + face.nz);
+      if(VOXEL_SET.has(`${nx},${ny},${nz}`)) continue; // fully hidden by neighbour
+
+      // Painter's depth: use rotated center + face offset projected to iso depth axis
+      // Iso depth ≈ (x + y - z) after rotation
+      const depth = rcx + rcy - rcz + (face.nx*cosA - face.ny*sinA)*0.5
+                  + (face.nx*sinA + face.ny*cosA)*0.5 - face.nz*0.5;
+
+      const bright = faceBrightness(fnx, fny, fnz);
+      const col    = shadeColor(baseCol, bright);
+
+      allFaces.push({ pts, idx: face.idx, col, depth });
+    }
+  }
+
+  // Sort all faces back-to-front
+  allFaces.sort((a,b) => a.depth - b.depth);
+
+  // Draw
+  ctx.save();
+  ctx.translate(cx, cy);
+
+  for(const { pts, idx, col } of allFaces) {
+    ctx.beginPath();
+    const p0 = pts[idx[0]];
+    ctx.moveTo(p0.sx, p0.sy);
+    for(let i=1;i<idx.length;i++) {
+      const p = pts[idx[i]];
+      ctx.lineTo(p.sx, p.sy);
+    }
+    ctx.closePath();
+    ctx.fillStyle = col;
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.28)';
+    ctx.lineWidth = 0.6;
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+// ─────────────────────────────────────────────────────────────
+//  COLOR UTILITIES
+// ─────────────────────────────────────────────────────────────
+function hexToRgb(hex) {
+  const r = parseInt(hex.slice(1,3),16);
+  const g = parseInt(hex.slice(3,5),16);
+  const b = parseInt(hex.slice(5,7),16);
+  return [r,g,b];
+}
+function shadeColor(hex, factor) {
+  const [r,g,b] = hexToRgb(hex);
+  return `rgb(${Math.round(r*factor)},${Math.round(g*factor)},${Math.round(b*factor)})`;
+}
+
+// ─────────────────────────────────────────────────────────────
+//  PLANET SPRITE RENDERER
+//  Hand-crafted blue planet with ocean, landmasses, clouds, atmos
+// ─────────────────────────────────────────────────────────────
+// Slow rotation angle (animated)
+let planetRot = 0;
+
+// Fixed landmass seed shapes (normalized -1..1 coords)
+const LANDS = [
+  // [cx, cy, rx, ry, angle] — ellipses in normalized planet space
+  { cx:-0.15, cy:-0.25, rx:0.28, ry:0.18, a:0.4,  col:'#2d7a3a' },
+  { cx: 0.30, cy: 0.10, rx:0.20, ry:0.26, a:-0.3, col:'#2e8040' },
+  { cx:-0.35, cy: 0.30, rx:0.18, ry:0.13, a:0.8,  col:'#3a7030' },
+  { cx: 0.10, cy:-0.42, rx:0.14, ry:0.10, a:0.2,  col:'#358038' },
+  { cx:-0.05, cy: 0.45, rx:0.22, ry:0.10, a:-0.5, col:'#2a6a30' },
+  { cx: 0.42, cy:-0.28, rx:0.12, ry:0.08, a:1.1,  col:'#4a8040' },
+  // polar ice caps
+  { cx: 0.0,  cy:-0.82, rx:0.30, ry:0.12, a:0.0,  col:'#c8dde8' },
+  { cx: 0.0,  cy: 0.82, rx:0.26, ry:0.10, a:0.0,  col:'#d0e4ee' },
+];
+
+// Cloud patches
+const CLOUDS = [
+  { cx:-0.20, cy:-0.10, rx:0.28, ry:0.07, a: 0.2  },
+  { cx: 0.15, cy: 0.30, rx:0.22, ry:0.06, a:-0.4  },
+  { cx:-0.40, cy: 0.05, rx:0.18, ry:0.05, a: 0.9  },
+  { cx: 0.35, cy:-0.40, rx:0.20, ry:0.06, a: 0.1  },
+  { cx: 0.00, cy: 0.15, rx:0.16, ry:0.05, a:-0.2  },
+  { cx:-0.10, cy:-0.55, rx:0.14, ry:0.04, a: 0.5  },
+  { cx: 0.25, cy: 0.55, rx:0.18, ry:0.05, a:-0.3  },
+];
+
+function drawPlanet(ctx, px, py, pr) {
+  ctx.save();
+  ctx.translate(px, py);
+
+  // ── Clip everything to circle ──
+  ctx.beginPath();
+  ctx.arc(0, 0, pr, 0, Math.PI*2);
+  ctx.clip();
+
+  // ── 1. Deep ocean base ──
+  const oceanGrad = ctx.createRadialGradient(
+    pr*0.25, -pr*0.3, 0,
+    0, 0, pr
+  );
+  oceanGrad.addColorStop(0,   '#4ab8e8');
+  oceanGrad.addColorStop(0.35,'#2280c0');
+  oceanGrad.addColorStop(0.7, '#0d4a80');
+  oceanGrad.addColorStop(1,   '#061828');
+  ctx.fillStyle = oceanGrad;
+  ctx.fillRect(-pr, -pr, pr*2, pr*2);
+
+  // ── 2. Ocean shimmer streaks (latitude bands) ──
+  for(let i=0; i<6; i++) {
+    const oy = -pr + (i/(5)) * pr*2;
+    const shimGrad = ctx.createLinearGradient(-pr, oy, pr, oy);
+    shimGrad.addColorStop(0,   'rgba(100,200,255,0)');
+    shimGrad.addColorStop(0.3, 'rgba(100,200,255,0.06)');
+    shimGrad.addColorStop(0.7, 'rgba(100,200,255,0.04)');
+    shimGrad.addColorStop(1,   'rgba(100,200,255,0)');
+    ctx.fillStyle = shimGrad;
+    ctx.fillRect(-pr, oy - pr*0.04, pr*2, pr*0.08);
+  }
+
+  // ── 3. Landmasses (with rotation offset) ──
+  for(const L of LANDS) {
+    // Rotate land cx around Y axis (simple horizontal scroll for planet spin)
+    const rotOffX = L.cx + planetRot * 0.3;
+    // Wrap into -1..1 with seam fade
+    const lx = ((rotOffX + 1.5) % 2) - 1;
+    const ly = L.cy;
+    ctx.save();
+    ctx.translate(lx * pr, ly * pr);
+    ctx.rotate(L.a);
+    // Land body
+    ctx.beginPath();
+    ctx.ellipse(0, 0, L.rx * pr, L.ry * pr, 0, 0, Math.PI*2);
+    const lg = ctx.createRadialGradient(L.rx*pr*-0.2, L.ry*pr*-0.3, 0, 0, 0, L.rx*pr);
+    const brightLand = L.col;
+    const darkLand   = shadeColor(L.col, 0.6);
+    lg.addColorStop(0, brightLand);
+    lg.addColorStop(1, darkLand);
+    ctx.fillStyle = lg;
+    ctx.fill();
+    // Coastal shadow
+    ctx.strokeStyle = 'rgba(0,30,60,0.3)';
+    ctx.lineWidth = pr * 0.025;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // ── 4. Cloud layer ──
+  for(const CL of CLOUDS) {
+    const rotOffX = CL.cx + planetRot * 0.5; // clouds move faster than land
+    const clx = ((rotOffX + 1.5) % 2) - 1;
+    const cly = CL.cy;
+    ctx.save();
+    ctx.translate(clx * pr, cly * pr);
+    ctx.rotate(CL.a);
+    ctx.beginPath();
+    ctx.ellipse(0, 0, CL.rx * pr, CL.ry * pr, 0, 0, Math.PI*2);
+    const cg = ctx.createRadialGradient(0, 0, 0, 0, 0, CL.rx * pr);
+    cg.addColorStop(0,   'rgba(255,255,255,0.82)');
+    cg.addColorStop(0.5, 'rgba(220,235,255,0.5)');
+    cg.addColorStop(1,   'rgba(200,220,255,0)');
+    ctx.fillStyle = cg;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // ── 5. Day/Night terminator shadow (left half darker) ──
+  const termGrad = ctx.createLinearGradient(-pr, 0, pr*0.5, 0);
+  termGrad.addColorStop(0,    'rgba(0,0,8,0.88)');
+  termGrad.addColorStop(0.35, 'rgba(0,0,8,0.55)');
+  termGrad.addColorStop(0.55, 'rgba(0,0,8,0.0)');
+  ctx.fillStyle = termGrad;
+  ctx.fillRect(-pr, -pr, pr*2, pr*2);
+
+  // ── 6. Specular highlight (sunlit glint top-right) ──
+  const specGrad = ctx.createRadialGradient(
+    pr*0.3, -pr*0.32, 0,
+    pr*0.3, -pr*0.32, pr*0.45
+  );
+  specGrad.addColorStop(0,   'rgba(255,255,255,0.18)');
+  specGrad.addColorStop(0.4, 'rgba(255,255,255,0.06)');
+  specGrad.addColorStop(1,   'rgba(255,255,255,0)');
+  ctx.fillStyle = specGrad;
+  ctx.fillRect(-pr, -pr, pr*2, pr*2);
+
+  ctx.restore(); // end clip
+
+  // ── 7. Atmosphere halo (outside clip) ──
+  ctx.save();
+  ctx.translate(px, py);
+  const atmosGrad = ctx.createRadialGradient(0, 0, pr*0.88, 0, 0, pr*1.18);
+  atmosGrad.addColorStop(0,   'rgba(80,160,255,0.0)');
+  atmosGrad.addColorStop(0.4, 'rgba(80,160,255,0.22)');
+  atmosGrad.addColorStop(0.75,'rgba(60,120,220,0.10)');
+  atmosGrad.addColorStop(1,   'rgba(40,80,180,0)');
+  ctx.beginPath();
+  ctx.arc(0, 0, pr*1.18, 0, Math.PI*2);
+  ctx.fillStyle = atmosGrad;
+  ctx.fill();
+
+  // Thin bright rim on lit side
+  const rimGrad = ctx.createLinearGradient(-pr*1.2, 0, pr*1.2, 0);
+  rimGrad.addColorStop(0,   'rgba(120,200,255,0)');
+  rimGrad.addColorStop(0.65,'rgba(120,200,255,0)');
+  rimGrad.addColorStop(0.82,'rgba(160,220,255,0.35)');
+  rimGrad.addColorStop(1,   'rgba(160,220,255,0)');
+  ctx.beginPath();
+  ctx.arc(0, 0, pr*1.04, 0, Math.PI*2);
+  ctx.strokeStyle = rimGrad;
+  ctx.lineWidth = pr * 0.06;
+  ctx.stroke();
+
+  ctx.restore();
+
+  // Tick planet rotation (slow drift)
+  planetRot += 0.0003;
+}
+
+// ─────────────────────────────────────────────────────────────
+//  SPACE RENDERING
+// ─────────────────────────────────────────────────────────────
+function drawSpace() {
+  const cam = { x: ship.x, y: ship.y };
+
+  // Background
+  ctx.fillStyle = '#03060f';
+  ctx.fillRect(0,0,W,H);
+
+  // Stars (parallax)
+  for(const layer of starLayers) {
+    for(const s of layer.stars) {
+      const sx = (s.x - cam.x * layer.parallax + W/2) % W;
+      const sy = (s.y - cam.y * layer.parallax + H/2) % H;
+      ctx.globalAlpha = s.b;
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(((sx%W)+W)%W, ((sy%H)+H)%H, s.r, 0, Math.PI*2);
+      ctx.fill();
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  // Planet
+  const px = W/2 + (PLANET.wx - cam.x);
+  const py = H/2 + (PLANET.wy - cam.y);
+  const pr = PLANET.r;
+
+  drawPlanet(ctx, px, py, pr);
+
+  // Dock radius indicator (if close)
+  const dist = Math.hypot(ship.x - PLANET.wx, ship.y - PLANET.wy);
+  if(dist < PLANET.DOCK_RADIUS * 1.5) {
+    ctx.save();
+    ctx.setLineDash([4,8]);
+    ctx.strokeStyle = 'rgba(0,255,200,0.3)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(px, py, PLANET.DOCK_RADIUS, 0, Math.PI*2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  // Ship
+  const scx = W/2, scy = H/2;
+  drawShipTopDown(scx, scy, ship.angle);
+
+  // Engine exhaust
+  if(ship.thrust > 0.05) {
+    const exhaustLen = ship.thrust * 40 + Math.random()*10;
+    ctx.save();
+    ctx.translate(scx, scy);
+    ctx.rotate(ship.angle);
+    const eg = ctx.createLinearGradient(0, 20, 0, 20+exhaustLen);
+    eg.addColorStop(0,  'rgba(255,140,30,0.9)');
+    eg.addColorStop(0.4,'rgba(255,80,0,0.5)');
+    eg.addColorStop(1,  'rgba(255,40,0,0)');
+    ctx.fillStyle = eg;
+    ctx.beginPath();
+    ctx.ellipse(0, 20+exhaustLen/2, 5, exhaustLen/2, 0, 0, Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  SURFACE RENDERING (ISOMETRIC)
+// ─────────────────────────────────────────────────────────────
+function drawSurface() {
+  // Background sky
+  const skyCol = surfaceIsDay ? '#0a1f3a' : '#010306';
+  ctx.fillStyle = skyCol;
+  ctx.fillRect(0,0,W,H);
+
+  // Horizon stars (if night)
+  if(!surfaceIsDay) {
+    ctx.globalAlpha = 0.6;
+    for(const layer of starLayers[0].stars.slice(0,30)) {
+      ctx.fillStyle='#fff';
+      ctx.beginPath();
+      ctx.arc((layer.x+2000)/4000*W, (layer.y+2000)/4000*H*0.5, layer.r*0.5, 0, Math.PI*2);
+      ctx.fill();
+    }
+    ctx.globalAlpha=1;
+  }
+
+  const camX = ship.sx, camY = ship.sy;
+  const TILE = 32;
+
+  // Viewport culling: compute which tile coords are on screen
+  // with a margin so tiles never pop in at edges
+  const MARGIN = 4;
+  const scrOriginX = W/2 - (camX - camY) * TILE;
+  const scrOriginY = H*0.45 - (camX + camY) * TILE * 0.5;
+  // Screen bounds in tile space (inverse iso transform, conservative)
+  const halfW = W / (2 * TILE) + MARGIN;
+  const halfH = H / (TILE * 0.5) + MARGIN;
+
+  ctx.save();
+  ctx.translate(W/2, H*0.45);
+  ctx.translate(-(camX-camY)*TILE, -(camX+camY)*TILE*0.5);
+
+  // surfaceTiles is already sorted — just iterate and cull
+  for(const t of surfaceTiles) {
+    const sx = (t.tx - t.ty) * TILE;
+    const sy = (t.tx + t.ty) * TILE * 0.5;
+
+    // Cull tiles whose screen position is outside viewport
+    const screenX = scrOriginX + sx;
+    const screenY = scrOriginY + sy;
+    if(screenX < -TILE*2 || screenX > W + TILE*2 ||
+       screenY < -TILE*2 || screenY > H + TILE*2) continue;
+
+    // Top face — use pre-baked color
+    ctx.beginPath();
+    ctx.moveTo(sx,        sy - TILE*0.5);
+    ctx.lineTo(sx + TILE, sy);
+    ctx.lineTo(sx,        sy + TILE*0.5);
+    ctx.lineTo(sx - TILE, sy);
+    ctx.closePath();
+    ctx.fillStyle = t.c;
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+    ctx.lineWidth = 0.5;
+    ctx.stroke();
+
+    // Height blocks — use pre-baked side colors, zero shadeColor() calls
+    if(t.h > 0) {
+      for(let z=0; z<t.h; z++) {
+        const bsy = sy - z*TILE;
+
+        // Left side
+        ctx.beginPath();
+        ctx.moveTo(sx-TILE, bsy);
+        ctx.lineTo(sx,      bsy+TILE*0.5);
+        ctx.lineTo(sx,      bsy+TILE*0.5+TILE);
+        ctx.lineTo(sx-TILE, bsy+TILE);
+        ctx.closePath();
+        ctx.fillStyle = t.cDark;
+        ctx.fill();
+
+        // Right side
+        ctx.beginPath();
+        ctx.moveTo(sx,     bsy+TILE*0.5);
+        ctx.lineTo(sx+TILE,bsy);
+        ctx.lineTo(sx+TILE,bsy+TILE);
+        ctx.lineTo(sx,     bsy+TILE*0.5+TILE);
+        ctx.closePath();
+        ctx.fillStyle = t.cRight;
+        ctx.fill();
+      }
+    }
+  }
+  ctx.restore();
+
+  // Ship (isometric, at screen center)
+  const SSCALE = 1.4;
+  const sscy = H * 0.45;
+  drawShipIsometric(W/2, sscy, ship.sangle, SSCALE);
+
+  // Engine exhaust (isometric direction)
+  if(ship.thrust > 0.05) {
+    const T = 14 * SSCALE;
+    const eback_wx = -Math.sin(ship.sangle) * 2;
+    const eback_wy = -Math.cos(ship.sangle) * 2;
+    const esx = W/2 + (eback_wx - eback_wy) * T;
+    const esy = H*0.45 + (eback_wx + eback_wy) * T * 0.5;
+
+    const eg = ctx.createRadialGradient(esx,esy,0, esx,esy, 20*ship.thrust);
+    eg.addColorStop(0,'rgba(255,140,30,0.8)');
+    eg.addColorStop(1,'rgba(255,40,0,0)');
+    ctx.beginPath();
+    ctx.arc(esx,esy,20*ship.thrust,0,Math.PI*2);
+    ctx.fillStyle = eg;
+    ctx.fill();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  PHYSICS UPDATE
+// ─────────────────────────────────────────────────────────────
+const PHYS = {
+  rotAccel:  0.004,
+  rotFrict:  0.88,
+  rotMax:    0.04,
+  thrAccel:  0.018,
+  thrFrict:  0.985,
+  maxSpeed:  10,
+  velFrict:  0.992,
+  boostMult: 2.5,
+};
+
+let boost = false;
+
+function physicsUpdate() {
+  // Read input
+  const axisX = stickInput.x + ((keys['d']||keys['arrowright']) ? 1 : 0) - ((keys['a']||keys['arrowleft']) ? 1 : 0);
+  const axisY = stickInput.y - ((keys['w']||keys['arrowup']) ? 1 : 0) + ((keys['s']||keys['arrowdown']) ? 1 : 0);
+  // Forward = -Y on stick (push up = forward)
+  const thrInput = Math.max(0, -stickInput.y) + ((keys['w']||keys['arrowup']) ? 1 : 0);
+  const slowInput = ((keys['s']||keys['arrowdown']) ? 1 : 0) + Math.max(0, stickInput.y);
+  boost = keys['shift'] || false;
+
+  const rotInput = axisX;
+
+  if(mode === MODE.SPACE) {
+    // Rotation
+    ship.rotVel += rotInput * PHYS.rotAccel;
+    ship.rotVel *= PHYS.rotFrict;
+    ship.rotVel = Math.max(-PHYS.rotMax, Math.min(PHYS.rotMax, ship.rotVel));
+    ship.angle += ship.rotVel;
+
+    // Thrust
+    const tBoost = boost ? PHYS.boostMult : 1;
+    if(thrInput > 0) {
+      ship.thrust = Math.min(1, ship.thrust + thrInput * 0.05);
+      ship.vx += Math.sin(ship.angle) * PHYS.thrAccel * thrInput * tBoost;
+      ship.vy -= Math.cos(ship.angle) * PHYS.thrAccel * thrInput * tBoost;
+    } else {
+      ship.thrust *= 0.9;
+    }
+
+    // Slow down
+    if(slowInput > 0) {
+      ship.vx *= 1 - slowInput * 0.05;
+      ship.vy *= 1 - slowInput * 0.05;
+    }
+
+    // Velocity friction
+    ship.vx *= PHYS.velFrict;
+    ship.vy *= PHYS.velFrict;
+    ship.speed = Math.hypot(ship.vx, ship.vy);
+
+    // Max speed
+    if(ship.speed > PHYS.maxSpeed * (boost ? PHYS.boostMult : 1)) {
+      const scale = PHYS.maxSpeed * (boost ? PHYS.boostMult : 1) / ship.speed;
+      ship.vx *= scale; ship.vy *= scale;
+    }
+
+    ship.x += ship.vx;
+    ship.y += ship.vy;
+
+  } else if(mode === MODE.SURFACE) {
+    // Same physics, different state vars
+    ship.srotVel += rotInput * PHYS.rotAccel;
+    ship.srotVel *= PHYS.rotFrict;
+    ship.srotVel = Math.max(-PHYS.rotMax, Math.min(PHYS.rotMax, ship.srotVel));
+    ship.sangle += ship.srotVel;
+
+    const tBoost = boost ? PHYS.boostMult : 1;
+    if(thrInput > 0) {
+      ship.thrust = Math.min(1, ship.thrust + thrInput * 0.05);
+      ship.svx -= Math.sin(ship.sangle) * PHYS.thrAccel * thrInput * tBoost;
+      ship.svy += Math.cos(ship.sangle) * PHYS.thrAccel * thrInput * tBoost;
+    } else {
+      ship.thrust *= 0.9;
+    }
+
+    if(slowInput > 0) {
+      ship.svx *= 1 - slowInput * 0.05;
+      ship.svy *= 1 - slowInput * 0.05;
+    }
+
+    ship.svx *= PHYS.velFrict;
+    ship.svy *= PHYS.velFrict;
+    ship.speed = Math.hypot(ship.svx, ship.svy);
+
+    ship.sx += ship.svx;
+    ship.sy += ship.svy;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  HUD UPDATE
+// ─────────────────────────────────────────────────────────────
+function updateHUD() {
+  const spd = ship.speed.toFixed(1);
+  const ang = mode === MODE.SPACE ? ship.angle : ship.sangle;
+  const hdg = ((ang * 180/Math.PI % 360) + 360) % 360;
+  document.getElementById('s-spd').textContent = spd;
+  document.getElementById('s-hdg').textContent = Math.round(hdg)+'°';
+  document.getElementById('s-thr').textContent = Math.round(ship.thrust*100)+'%';
+}
+
+// ─────────────────────────────────────────────────────────────
+//  PROXIMITY & PLANET INTERACTION
+// ─────────────────────────────────────────────────────────────
+let lastPromptState = 'none'; // 'none','dock','enter'
+let surfaceIsDay = true;
+let transitioning = false;
+
+function checkPlanetProximity() {
+  if(mode !== MODE.SPACE || transitioning) return;
+
+  const dist = Math.hypot(ship.x - PLANET.wx, ship.y - PLANET.wy);
+  const prompt = document.getElementById('prompt');
+
+  if(dist <= PLANET.ENTER_RADIUS) {
+    // Collision zone — offer DOCK or ENTER
+    if(lastPromptState !== 'enter') {
+      lastPromptState = 'enter';
+      prompt.style.display = 'flex';
+      prompt.innerHTML = `
+        <button class="prompt-btn" onclick="doDock()">▣ DOCK</button>
+        <button class="prompt-btn" onclick="doEnter()">▼ ENTER</button>
+      `;
+    }
+  } else if(dist <= PLANET.DOCK_RADIUS) {
+    // Dock proximity only
+    if(lastPromptState !== 'dock') {
+      lastPromptState = 'dock';
+      prompt.style.display = 'flex';
+      prompt.innerHTML = `<button class="prompt-btn" onclick="doDock()">▣ DOCK</button>`;
+    }
+  } else {
+    if(lastPromptState !== 'none') {
+      lastPromptState = 'none';
+      prompt.style.display = 'none';
+    }
+  }
+}
+
+function doDock() {
+  document.getElementById('prompt').style.display='none';
+  lastPromptState = 'none';
+  // Show shop modal (stub)
+  alert('🛒 VEXARION SHOP\n\n[Coming soon — hull upgrades, weapons, fuel]');
+}
+
+function doEnter() {
+  if(transitioning) return;
+  transitioning = true;
+  document.getElementById('prompt').style.display='none';
+  lastPromptState = 'none';
+
+  // Determine day/night: ship angle relative to planet
+  // Light source is top-right of planet. Day = ship approaching from right/top side
+  const dx = ship.x - PLANET.wx;
+  const dy = ship.y - PLANET.wy;
+  const approachAngle = Math.atan2(dy, dx); // angle from planet center to ship
+  // Day side: roughly -PI/2 to PI/2 (right half)
+  surfaceIsDay = (approachAngle > -Math.PI/2 && approachAngle < Math.PI/2);
+
+  const fadeColor = surfaceIsDay ? '#ffffff' : '#000000';
+  const fade = document.getElementById('fade');
+  fade.style.background = fadeColor;
+  fade.style.opacity = '1';
+  fade.style.transition = 'opacity 0.6s ease';
+
+  setTimeout(() => {
+    // Switch to surface
+    mode = MODE.SURFACE;
+    ship.sx = 0; ship.sy = 0;
+    ship.svx = ship.vx * 0.1;
+    ship.svy = ship.vy * 0.1;
+    ship.sangle = ship.angle;
+    ship.srotVel = 0;
+    ship.thrust = 0;
+
+    document.getElementById('hud-mode').textContent =
+      'PLANETARY SURFACE — ISOMETRIC VIEW';
+    document.getElementById('view-label').textContent =
+      surfaceIsDay ? '☀ DAYTIME SURFACE' : '◑ DARKSIDE SURFACE';
+    document.getElementById('hint').textContent =
+      'W·A·D·S / STICK — SURFACE NAVIGATION';
+
+    fade.style.opacity = '0';
+    setTimeout(() => { transitioning = false; }, 700);
+  }, 650);
+}
+
+function doExit() {
+  if(transitioning) return;
+  transitioning = true;
+
+  const fadeColor = surfaceIsDay ? '#ffffff' : '#000000';
+  const fade = document.getElementById('fade');
+  fade.style.background = fadeColor;
+  fade.style.opacity = '1';
+
+  setTimeout(() => {
+    mode = MODE.SPACE;
+    ship.vx = 0; ship.vy = 0;
+    // Position ship just outside planet
+    ship.x = PLANET.wx + (PLANET.ENTER_RADIUS + 20) * Math.sign(ship.x - PLANET.wx || 1);
+    ship.y = PLANET.wy + (PLANET.ENTER_RADIUS + 20) * Math.sign(ship.y - PLANET.wy || -1);
+    ship.thrust = 0;
+
+    document.getElementById('hud-mode').textContent = 'DEEP SPACE — TOP-DOWN VIEW';
+    document.getElementById('view-label').textContent = '';
+    document.getElementById('hint').textContent =
+      'DRAG STICK · WASD · ARROW KEYS \u00a0 THRUST VECTOR';
+
+    fade.style.opacity = '0';
+    setTimeout(() => { transitioning = false; }, 700);
+  }, 650);
+}
+
+// ─────────────────────────────────────────────────────────────
+//  SURFACE EXIT BUTTON (appears when on surface)
+// ─────────────────────────────────────────────────────────────
+// We'll draw it as a small HUD button
+
+// ─────────────────────────────────────────────────────────────
+//  MAIN LOOP
+// ─────────────────────────────────────────────────────────────
+function loop() {
+  if(mode !== MODE.TRANSITIONING) {
+    physicsUpdate();
+    checkPlanetProximity();
+
+    if(mode === MODE.SPACE) {
+      drawSpace();
+    } else if(mode === MODE.SURFACE) {
+      drawSurface();
+      // Draw exit button
+      ctx.fillStyle = 'rgba(0,20,20,0.6)';
+      ctx.strokeStyle = '#0ff4';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.rect(W-100, 8, 90, 28);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#0ff';
+      ctx.font = '10px Courier New';
+      ctx.letterSpacing = '0.15em';
+      ctx.textAlign = 'center';
+      ctx.fillText('↑ EXIT', W-55, 27);
+      ctx.textAlign = 'left';
+    }
+    updateHUD();
+  }
+  requestAnimationFrame(loop);
+}
+
+// ─────────────────────────────────────────────────────────────
+//  INPUT — KEYBOARD
+// ─────────────────────────────────────────────────────────────
+window.addEventListener('keydown', e => {
+  keys[e.key.toLowerCase()] = true;
+  if(e.key === 'Shift') boost = true;
+  if(e.key === 'Escape' && mode === MODE.SURFACE) doExit();
+  e.preventDefault();
+});
+window.addEventListener('keyup', e => {
+  keys[e.key.toLowerCase()] = false;
+  if(e.key === 'Shift') boost = false;
+});
+
+// ─────────────────────────────────────────────────────────────
+//  INPUT — ANALOG STICK
+// ─────────────────────────────────────────────────────────────
+const stickOuter = document.getElementById('stick-outer');
+const stickInner = document.getElementById('stick-inner');
+let stickActive = false, stickOrigin = {x:0,y:0};
+
+function getStickCenter() {
+  const r = stickOuter.getBoundingClientRect();
+  return { x: r.left + r.width/2, y: r.top + r.height/2 };
+}
+
+stickOuter.addEventListener('touchstart', e => {
+  stickActive = true;
+  stickOrigin = getStickCenter();
+  e.preventDefault();
+}, {passive:false});
+
+window.addEventListener('touchmove', e => {
+  if(!stickActive) return;
+  const t = e.touches[0];
+  const dx = t.clientX - stickOrigin.x;
+  const dy = t.clientY - stickOrigin.y;
+  const maxR = 35;
+  const dist = Math.min(Math.hypot(dx,dy), maxR);
+  const ang  = Math.atan2(dy, dx);
+  stickInput.x = Math.cos(ang) * dist / maxR;
+  stickInput.y = Math.sin(ang) * dist / maxR;
+  stickInner.style.transform = `translate(calc(-50% + ${Math.cos(ang)*dist}px), calc(-50% + ${Math.sin(ang)*dist}px))`;
+  e.preventDefault();
+}, {passive:false});
+
+window.addEventListener('touchend', e => {
+  if(!e.touches.length) {
+    stickActive = false;
+    stickInput.x = 0; stickInput.y = 0;
+    stickInner.style.transform = 'translate(-50%,-50%)';
+  }
+});
+
+// Canvas tap for exit button (surface mode)
+canvas.addEventListener('click', e => {
+  if(mode === MODE.SURFACE) {
+    const bx = W-100, by = 8, bw = 90, bh = 28;
+    if(e.clientX >= bx && e.clientX <= bx+bw && e.clientY >= by && e.clientY <= by+bh) {
+      doExit();
+    }
+  }
+});
+canvas.addEventListener('touchend', e => {
+  if(mode === MODE.SURFACE) {
+    const t = e.changedTouches[0];
+    const bx = W-100, by = 8, bw = 90, bh = 28;
+    if(t.clientX >= bx && t.clientX <= bx+bw && t.clientY >= by && t.clientY <= by+bh) {
+      doExit();
+    }
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+//  INIT
+// ─────────────────────────────────────────────────────────────
+ship.x = 0; ship.y = 200; ship.angle = -0.4;
+loop();
+</script>
+</body>
+</html>
