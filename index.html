@@ -925,8 +925,22 @@ function physicsUpdate() {
     //  SURFACE MODE (same control logic as space mode)
     // ─────────────────────────────────────────────────────────
     if(analogActive) {
-      // Analog controls - rotate toward stick direction
-      const targetAngle = Math.atan2(stickInput.x, -stickInput.y);
+      // Analog controls — rotate toward stick direction in ISOMETRIC space.
+      //
+      // The analog stick delivers a direction in 2D screen space (sx, sy).
+      // In iso: sx = (wx - wy) * T,  sy = (wx + wy) * T * 0.5
+      // Inverse (ignoring T which cancels):
+      //   wx =  sx * 0.5 + sy
+      //   wy = -sx * 0.5 + sy
+      // We un-project the stick from screen space to world space so the ship
+      // faces exactly where the stick visually points on the isometric view.
+      const isoSx = stickInput.x;
+      const isoSy = stickInput.y;   // canvas Y: positive = screen-down
+      const world_dx =  isoSx * 0.5 + isoSy;  // world +X
+      const world_dy = -isoSx * 0.5 + isoSy;  // world +Y
+      // sangle=0 → nose faces world +Y; use atan2(x,y) convention to match
+      const targetAngle = Math.atan2(world_dx, world_dy);
+
       let angleDiff = targetAngle - ship.sangle;
       while(angleDiff > Math.PI) angleDiff -= Math.PI * 2;
       while(angleDiff < -Math.PI) angleDiff += Math.PI * 2;
